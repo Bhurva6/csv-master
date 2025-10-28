@@ -424,6 +424,9 @@ if 'feature' in st.session_state:
                         with st.spinner("Verifying emails..."):
                             import re
 
+                            # Import dns.resolver for MX record checking
+                            import dns.resolver
+
                             # Enhanced email validation
                             email_pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
 
@@ -434,31 +437,63 @@ if 'feature' in st.session_state:
                                 'maildrop.cc', 'tempail.com', 'dispostable.com'
                             ]
 
+                            # Function to check if domain has valid MX records
+                            def has_valid_mx_record(domain):
+                                try:
+                                    mx_records = dns.resolver.resolve(domain, 'MX')
+                                    return len(mx_records) > 0
+                                except:
+                                    return False
+
                             results = []
-                            for idx, email in enumerate(df[selected_email_col]):
-                                if pd.isna(email) or str(email).strip() == '':
+                            for idx, email_data in enumerate(df[selected_email_col]):
+                                if pd.isna(email_data) or str(email_data).strip() == '':
                                     results.append({
                                         'Row': idx + 1,
-                                        'Email': email if pd.notna(email) else '',
+                                        'Original Data': email_data if pd.notna(email_data) else '',
+                                        'Email': '',
                                         'Status': 'Empty',
                                         'Notes': 'Missing email address'
                                     })
                                     continue
 
-                                email = str(email).strip().lower()
-                                is_valid_format = bool(re.match(email_pattern, email))
+                                # Handle multiple emails in a single cell
+                                email_string = str(email_data).strip()
+                                
+                                # Split by common delimiters: comma, semicolon, newline, pipe, slash
+                                emails_in_cell = re.split(r'[;,|\n/]+', email_string)
+                                emails_in_cell = [e.strip() for e in emails_in_cell if e.strip()]
+
+                                if not emails_in_cell:
+                                    results.append({
+                                        'Row': idx + 1,
+                                        'Original Data': email_string,
+                                        'Email': '',
+                                        'Status': 'Empty',
+                                        'Notes': 'No emails found after parsing'
+                                    })
+                                    continue
+
+                                # Process each email in the cell
+                                for email_idx, email in enumerate(emails_in_cell):
+                                    email = email.lower()
+                                    is_valid_format = bool(re.match(email_pattern, email))
 
                                 if is_valid_format:
                                     domain = email.split('@')[1]
                                     is_disposable = domain in disposable_domains
                                     is_deliverable = not any(x in email for x in ['test', 'example', 'invalid', 'fake'])
+                                    has_mx = has_valid_mx_record(domain)
 
-                                    if is_deliverable and not is_disposable:
+                                    if is_deliverable and not is_disposable and has_mx:
                                         status = 'Valid (Deliverable)'
-                                        notes = f'Valid format, {domain} domain'
+                                        notes = f'Valid format, {domain} domain with MX records'
                                     elif is_disposable:
                                         status = 'Invalid (Disposable)'
                                         notes = f'Disposable email domain: {domain}'
+                                    elif not has_mx:
+                                        status = 'Invalid (Unreachable)'
+                                        notes = f'Domain {domain} has no valid MX records'
                                     else:
                                         status = 'Invalid (Undeliverable)'
                                         notes = f'Potentially undeliverable: {domain}'
@@ -468,9 +503,10 @@ if 'feature' in st.session_state:
 
                                 results.append({
                                     'Row': idx + 1,
+                                    'Original Data': email_string if email_idx == 0 else '',  # Show original data only for first email
                                     'Email': email,
                                     'Status': status,
-                                    'Notes': notes
+                                    'Notes': f'{notes} (Email {email_idx + 1} of {len(emails_in_cell)})' if len(emails_in_cell) > 1 else notes
                                 })
 
                             results_df = pd.DataFrame(results)
@@ -656,27 +692,45 @@ if 'feature' in st.session_state:
                                     is_us_format = bool(re.match(us_pattern, clean_phone))
                                     is_international = bool(re.match(international_pattern, clean_phone))
 
-                                    # Determine country/region
+                                    # Determine country/region and phone type
                                     if clean_phone.startswith('+1') or (len(clean_phone) == 10 and not clean_phone.startswith('+')):
                                         region = "US/Canada"
+                                        # US/Canada: Landline prefixes typically don't start with 1
+                                        is_landline = not (clean_phone[-10] in '2345')
                                     elif clean_phone.startswith('+44'):
                                         region = "UK"
+                                        # UK: Landline numbers typically start with 01 or 02
+                                        is_landline = clean_phone[3:5] in ['01', '02']
                                     elif clean_phone.startswith('+91'):
                                         region = "India"
+                                        # India: Landline numbers are typically 8 digits and start with area codes
+                                        is_landline = len(clean_phone[3:]) <= 8
                                     elif clean_phone.startswith('+61'):
                                         region = "Australia"
+                                        # Australian landlines start with 02-08
+                                        is_landline = clean_phone[3:4] in ['2', '3', '7', '8']
                                     elif clean_phone.startswith('+86'):
                                         region = "China"
+                                        is_landline = len(clean_phone[3:]) < 11
                                     elif clean_phone.startswith('+81'):
                                         region = "Japan"
+                                        is_landline = not clean_phone[3] in ['7', '8', '9']
                                     elif clean_phone.startswith('+49'):
                                         region = "Germany"
+                                        is_landline = not clean_phone[3] in ['1', '5']
                                     elif clean_phone.startswith('+33'):
                                         region = "France"
+                                        is_landline = clean_phone[3] == '1'
                                     elif clean_phone.startswith('+'):
                                         region = "International"
+                                        is_landline = False  # Default to mobile for unknown international
                                     else:
                                         region = "Unknown"
+                                        is_landline = False
+
+                                    # Check if number is likely to be WhatsApp enabled
+                                    # Most mobile numbers can use WhatsApp, so we'll assume mobile numbers are WhatsApp-enabled
+                                    is_whatsapp = is_valid and not is_landline
 
                                     is_valid = is_us_format or is_international
 
@@ -687,6 +741,8 @@ if 'feature' in st.session_state:
                                         'Cleaned': clean_phone,
                                         'Format Valid': '✅ Valid' if is_valid else '❌ Invalid',
                                         'Region': region,
+                                        'Type': 'Landline' if is_landline else 'Mobile',
+                                        'WhatsApp': '✅ Yes' if is_whatsapp else '❌ No',
                                         'Status': 'Valid' if is_valid else 'Invalid',
                                         'Notes': f'Phone {phone_idx + 1} of {len(phones_in_cell)} in cell' if len(phones_in_cell) > 1 else ''
                                     })
@@ -701,15 +757,31 @@ if 'feature' in st.session_state:
                             invalid_phones = sum(1 for r in results if r['Status'] == 'Invalid')
                             empty_entries = sum(1 for r in results if r['Status'] == 'Empty')
 
-                            col1, col2, col3, col4 = st.columns(4)
+                            # Add WhatsApp and phone type counts
+                            whatsapp_numbers = sum(1 for r in results if r['WhatsApp'] == '✅ Yes')
+                            landline_numbers = sum(1 for r in results if r['Status'] == 'Valid' and r['Type'] == 'Landline')
+                            mobile_numbers = sum(1 for r in results if r['Status'] == 'Valid' and r['Type'] == 'Mobile')
+
+                            col1, col2 = st.columns(2)
                             with col1:
                                 st.metric("Total Phone Numbers", total_phones)
-                            with col2:
                                 st.metric("Valid Numbers", valid_phones)
-                            with col3:
                                 st.metric("Invalid Numbers", invalid_phones)
-                            with col4:
-                                st.metric("Empty Entries", empty_entries)
+                            with col2:
+                                st.metric("WhatsApp Enabled", whatsapp_numbers)
+                                st.metric("Mobile Numbers", mobile_numbers)
+                                st.metric("Landline Numbers", landline_numbers)
+
+                            # Add separate sections for Mobile and Landline numbers
+                            if mobile_numbers > 0:
+                                st.subheader("📱 Mobile Numbers")
+                                mobile_df = results_df[results_df['Type'] == 'Mobile']
+                                st.dataframe(mobile_df, use_container_width=True)
+
+                            if landline_numbers > 0:
+                                st.subheader("☎️ Landline Numbers")
+                                landline_df = results_df[results_df['Type'] == 'Landline']
+                                st.dataframe(landline_df, use_container_width=True)
 
                             # Success rate
                             if total_phones > 0:
@@ -752,6 +824,12 @@ if 'feature' in st.session_state:
                             ws['A6'] = "Empty Entries:"
                             ws['B6'] = empty_entries
                             ws['A7'] = f"Success Rate: {success_rate:.1f}%" if total_phones > 0 else "Success Rate: N/A"
+                            ws['A8'] = "WhatsApp Enabled:"
+                            ws['B8'] = whatsapp_numbers
+                            ws['A9'] = "Mobile Numbers:"
+                            ws['B9'] = mobile_numbers
+                            ws['A10'] = "Landline Numbers:"
+                            ws['B10'] = landline_numbers
 
                             # Add detailed results starting from row 10
                             start_row = 10
