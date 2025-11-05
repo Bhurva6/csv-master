@@ -1379,14 +1379,14 @@ if 'feature' in st.session_state:
             
             google_api_key = st.text_input(
                 "Google Custom Search API Key *", 
-                value="",
+                value="AIzaSyBIlvP6tk8HDTy1F3qZ-Ir0xi8RiRHHfec",
                 type="password", 
                 help="Free tier: 100 searches/day. Get from console.cloud.google.com -> APIs & Services -> Credentials",
                 placeholder="Enter your real Google API key"
             )
             google_search_engine_id = st.text_input(
                 "Google Search Engine ID *", 
-                value="",
+                value="902681f49f1d54896",
                 help="Create custom search engine at programmablesearchengine.google.com/controlpanel/create",
                 placeholder="Enter your Search Engine ID (format: xxxxxxxxx:yyyyyyy)"
             )
@@ -1446,6 +1446,90 @@ if 'feature' in st.session_state:
                         time.sleep(0.01)  # Simulate search time
                     return leads
 
+                def calculate_confidence_score(lead):
+                    """Calculate confidence score for lead conversion (0-100)"""
+                    score = 0
+                    factors = []
+                    
+                    # Name quality (20 points)
+                    if lead.get('Name') and lead['Name'] != 'N/A':
+                        name = lead['Name'].strip()
+                        # Filter out generic terms
+                        generic_terms = ['contact', 'email', 'call', 'office', 'global', 'worldwide', 
+                                       'design', 'architecture', 'institute', 'updation', 'us']
+                        is_generic = any(term in name.lower() for term in generic_terms)
+                        
+                        if not is_generic and len(name.split()) >= 2:
+                            score += 20
+                            factors.append("✓ Valid person name")
+                        elif not is_generic:
+                            score += 10
+                            factors.append("⚠ Single word name")
+                    
+                    # Email quality (30 points)
+                    if lead.get('Email') and lead['Email'] != 'N/A':
+                        email = lead['Email'].lower()
+                        if '@' in email and '.' in email:
+                            # Personal email domains get higher score
+                            if any(domain in email for domain in ['gmail', 'yahoo', 'hotmail', 'outlook']):
+                                score += 15
+                                factors.append("⚠ Personal email domain")
+                            else:
+                                score += 30
+                                factors.append("✓ Corporate email")
+                    
+                    # Phone quality (25 points)
+                    if lead.get('Phone') and lead['Phone'] != 'N/A':
+                        phone = re.sub(r'[^\d+]', '', lead['Phone'])
+                        if len(phone) >= 10:
+                            if phone.startswith('+91') or phone.startswith('91'):
+                                score += 25
+                                factors.append("✓ Valid Indian number")
+                            else:
+                                score += 20
+                                factors.append("✓ Valid phone number")
+                    
+                    # Company information (15 points)
+                    if lead.get('Company') and lead['Company'] != 'N/A':
+                        score += 15
+                        factors.append("✓ Company identified")
+                    
+                    # LinkedIn source bonus (10 points)
+                    if lead.get('Source') and 'linkedin' in lead['Source'].lower():
+                        score += 10
+                        factors.append("✓ LinkedIn verified")
+                    
+                    return min(score, 100), factors
+
+                def is_valid_person_name(name):
+                    """Check if name is likely a real person, not a generic term"""
+                    if not name or name == 'N/A':
+                        return False
+                    
+                    name_lower = name.lower().strip()
+                    
+                    # Filter out generic/company terms
+                    invalid_terms = [
+                        'contact us', 'email', 'call us', 'phone', 'office', 'global', 
+                        'worldwide', 'design', 'architecture', 'architect', 'institute',
+                        'updation', 'login', 'signup', 'register', 'about', 'services',
+                        'portfolio', 'projects', 'team', 'careers', 'join', 'follow',
+                        'subscribe', 'newsletter', 'home', 'menu', 'search', 'headquarters'
+                    ]
+                    
+                    if any(term in name_lower for term in invalid_terms):
+                        return False
+                    
+                    # Must have at least 2 words (first and last name)
+                    if len(name.split()) < 2:
+                        return False
+                    
+                    # Should start with capital letter
+                    if not name[0].isupper():
+                        return False
+                    
+                    return True
+
                 def search_google(location, profession, api_key=None, engine_id=None):
                     """Search Google for professionals - REAL API ONLY"""
                     if not api_key or not engine_id:
@@ -1453,76 +1537,152 @@ if 'feature' in st.session_state:
                         return []
                     
                     try:
-                        # Improved search query for better results
-                        query = f'"{profession}" "{location}" India contact email phone'
-                        url = f"https://www.googleapis.com/customsearch/v1?key={api_key}&cx={engine_id}&q={requests.utils.quote(query)}&num=10"
-                        
-                        st.info(f"Calling API: {url.split('&key=')[0]}...")
-                        response = requests.get(url, timeout=15)
-                        
-                        # Check for API errors
-                        if response.status_code != 200:
-                            error_data = response.json() if response.text else {}
-                            error_msg = error_data.get('error', {}).get('message', 'Unknown error')
-                            st.error(f"❌ Google API Error ({response.status_code}): {error_msg}")
-                            return []
-                        
-                        data = response.json()
-                        
-                        # Check if we got results
-                        if 'items' not in data or len(data.get('items', [])) == 0:
-                            st.warning(f"⚠️ No results found from Google API for '{profession}' in '{location}'")
-                            return []
-                        
-                        st.success(f"✅ Found {len(data.get('items', []))} results from Google API")
-                        
                         leads = []
-                        for item in data.get('items', []):
-                            title = item.get('title', '')
-                            snippet = item.get('snippet', '')
-                            link = item.get('link', '')
+                        
+                        # Multiple search strategies for better results
+                        search_queries = [
+                            f'{profession} {location} India site:linkedin.com/in',
+                            f'{profession} {location} India email phone contact',
+                            f'"{profession}" "{location}" director manager principal',
+                            f'{profession} professionals {location} India contact details'
+                        ]
+                        
+                        for query_idx, query in enumerate(search_queries):
+                            st.info(f"🔍 Search strategy {query_idx + 1}/{len(search_queries)}: {query[:50]}...")
                             
-                            # Extract name from title (improved pattern)
-                            name_match = re.search(r'([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)', title)
-                            if not name_match:
-                                # Try to extract from snippet
-                                name_match = re.search(r'([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)', snippet)
+                            url = f"https://www.googleapis.com/customsearch/v1?key={api_key}&cx={engine_id}&q={requests.utils.quote(query)}&num=10"
+                            response = requests.get(url, timeout=15)
                             
-                            name = name_match.group(1) if name_match else None
+                            # Check for API errors
+                            if response.status_code != 200:
+                                error_data = response.json() if response.text else {}
+                                error_msg = error_data.get('error', {}).get('message', 'Unknown error')
+                                st.warning(f"⚠️ Query {query_idx + 1} failed: {error_msg}")
+                                continue
                             
-                            # Extract email from snippet and title
-                            email_pattern = r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
-                            email_matches = re.findall(email_pattern, snippet + ' ' + title)
-                            email = email_matches[0] if email_matches else None
+                            data = response.json()
                             
-                            # Extract phone from snippet and title
-                            phone_pattern = r'[\+]?[(]?[0-9]{3}[)]?[-\s\.]?[0-9]{3}[-\s\.]?[0-9]{4,6}'
-                            phone_matches = re.findall(phone_pattern, snippet + ' ' + title)
-                            phone = phone_matches[0] if phone_matches else None
+                            if 'items' not in data:
+                                continue
                             
-                            # Extract company name
-                            company_match = re.search(r'(?:at|@|works at|employed at)\s+([A-Z][a-zA-Z\s&]+?)(?:\s*[-|,]|\s*$)', snippet)
-                            company = company_match.group(1).strip() if company_match else None
-                            
-                            # Only add if we have at least a name or email or phone
-                            if name or email or phone:
+                            for item in data.get('items', []):
+                                title = item.get('title', '')
+                                snippet = item.get('snippet', '')
+                                link = item.get('link', '')
+                                
+                                # Multiple name extraction patterns
+                                name = None
+                                
+                                # LinkedIn profile pattern
+                                if 'linkedin.com' in link:
+                                    linkedin_name = re.search(r'([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})\s*[-|]', title)
+                                    if linkedin_name:
+                                        name = linkedin_name.group(1).strip()
+                                
+                                # Directory listing pattern
+                                if not name:
+                                    dir_pattern = re.search(r'(?:Mr\.|Ms\.|Dr\.)?\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})', title)
+                                    if dir_pattern:
+                                        potential_name = dir_pattern.group(1).strip()
+                                        if is_valid_person_name(potential_name):
+                                            name = potential_name
+                                
+                                # Snippet pattern
+                                if not name:
+                                    snippet_pattern = re.search(r'(?:by|from|contact|reach)\s+([A-Z][a-z]+\s+[A-Z][a-z]+)', snippet)
+                                    if snippet_pattern:
+                                        potential_name = snippet_pattern.group(1).strip()
+                                        if is_valid_person_name(potential_name):
+                                            name = potential_name
+                                
+                                # Skip if no valid name found
+                                if not name or not is_valid_person_name(name):
+                                    continue
+                                
+                                # Extract email - improved patterns
+                                email = None
+                                email_pattern = r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
+                                email_matches = re.findall(email_pattern, snippet + ' ' + title)
+                                
+                                for em in email_matches:
+                                    # Skip generic emails
+                                    if not any(generic in em.lower() for generic in ['info@', 'contact@', 'admin@', 'support@']):
+                                        email = em
+                                        break
+                                
+                                # Extract phone - improved for Indian numbers
+                                phone = None
+                                phone_patterns = [
+                                    r'\+91[-\s]?\d{10}',
+                                    r'91[-\s]?\d{10}',
+                                    r'\d{5}[-\s]?\d{5}',
+                                    r'\+91[-\s]?\d{5}[-\s]?\d{5}'
+                                ]
+                                
+                                for pattern in phone_patterns:
+                                    phone_match = re.search(pattern, snippet + ' ' + title)
+                                    if phone_match:
+                                        phone = phone_match.group(0)
+                                        break
+                                
+                                # Extract company
+                                company = None
+                                company_patterns = [
+                                    r'(?:at|@|works at|employed at|with)\s+([A-Z][a-zA-Z\s&]+?)(?:\s*[-|,]|\s*$)',
+                                    r'([A-Z][a-zA-Z\s&]+?)\s*[-|]',
+                                ]
+                                
+                                for pattern in company_patterns:
+                                    company_match = re.search(pattern, snippet)
+                                    if company_match:
+                                        potential_company = company_match.group(1).strip()
+                                        if len(potential_company) > 3 and potential_company not in name:
+                                            company = potential_company
+                                            break
+                                
+                                # Create lead entry
                                 lead = {
-                                    'Name': name if name else 'N/A',
+                                    'Name': name,
                                     'Profession': profession,
                                     'Location': location,
                                     'Email': email if email else 'N/A',
                                     'Phone': phone if phone else 'N/A',
                                     'Company': company if company else 'N/A',
-                                    'Source': f'Google Search (Real API)',
+                                    'Source': 'LinkedIn' if 'linkedin.com' in link else 'Google Search',
                                     'Link': link,
-                                    'Confidence': 'High' if (name and email) else 'Medium' if email else 'Low'
+                                    'Confidence Score': 0,
+                                    'Confidence Factors': ''
                                 }
-                                leads.append(lead)
+                                
+                                # Calculate confidence score
+                                score, factors = calculate_confidence_score(lead)
+                                lead['Confidence Score'] = score
+                                lead['Confidence Factors'] = ' | '.join(factors)
+                                
+                                # Only add if confidence score is reasonable
+                                if score >= 30:
+                                    leads.append(lead)
+                            
+                            # Small delay between queries to avoid rate limiting
+                            time.sleep(1)
                         
-                        if not leads:
-                            st.warning("⚠️ API returned results but no contact information could be extracted")
+                        # Remove duplicates based on name
+                        seen_names = set()
+                        unique_leads = []
+                        for lead in leads:
+                            if lead['Name'] not in seen_names:
+                                seen_names.add(lead['Name'])
+                                unique_leads.append(lead)
                         
-                        return leads
+                        # Sort by confidence score
+                        unique_leads.sort(key=lambda x: x['Confidence Score'], reverse=True)
+                        
+                        if unique_leads:
+                            st.success(f"✅ Found {len(unique_leads)} qualified leads with confidence scores")
+                        else:
+                            st.warning("⚠️ No qualified leads found. Try adjusting search criteria.")
+                        
+                        return unique_leads
                         
                     except requests.exceptions.Timeout:
                         st.error("❌ API request timed out. Please try again.")
@@ -1562,20 +1722,61 @@ if 'feature' in st.session_state:
 
                 if new_leads:
                     leads_df = pd.DataFrame(new_leads)
-                    st.subheader("📋 New Leads Found")
-                    st.dataframe(leads_df, use_container_width=True)
-
-                    # Summary
+                    
+                    # Summary with confidence metrics
                     st.subheader("📊 Search Summary")
-                    col1, col2, col3 = st.columns(3)
+                    col1, col2, col3, col4 = st.columns(4)
                     with col1:
                         st.metric("Total Leads Found", len(new_leads))
                     with col2:
-                        high_conf = sum(1 for l in new_leads if l['Confidence'] == 'High')
-                        st.metric("High Confidence", high_conf)
+                        avg_score = sum(l['Confidence Score'] for l in new_leads) / len(new_leads) if new_leads else 0
+                        st.metric("Avg Confidence", f"{avg_score:.0f}%")
                     with col3:
-                        with_emails = sum(1 for l in new_leads if l['Email'] and '@' in l['Email'])
-                        st.metric("With Email Contacts", with_emails)
+                        high_quality = sum(1 for l in new_leads if l['Confidence Score'] >= 70)
+                        st.metric("High Quality (70+)", high_quality)
+                    with col4:
+                        with_contact = sum(1 for l in new_leads if l['Email'] != 'N/A' or l['Phone'] != 'N/A')
+                        st.metric("With Contact Info", with_contact)
+                    
+                    # Show top 5 highest confidence leads
+                    st.subheader("🎯 Top Conversion Candidates")
+                    st.info("These leads have the highest likelihood of conversion based on data quality")
+                    
+                    top_leads = sorted(new_leads, key=lambda x: x['Confidence Score'], reverse=True)[:5]
+                    for i, lead in enumerate(top_leads, 1):
+                        with st.expander(f"#{i} - {lead['Name']} (Score: {lead['Confidence Score']}%)", expanded=(i<=3)):
+                            col_a, col_b = st.columns(2)
+                            with col_a:
+                                st.write(f"**📧 Email:** {lead['Email']}")
+                                st.write(f"**📞 Phone:** {lead['Phone']}")
+                                st.write(f"**🏢 Company:** {lead['Company']}")
+                            with col_b:
+                                st.write(f"**📍 Location:** {lead['Location']}")
+                                st.write(f"**💼 Profession:** {lead['Profession']}")
+                                st.write(f"**🔗 Source:** {lead['Source']}")
+                            
+                            # Show confidence factors
+                            if lead.get('Confidence Factors'):
+                                st.success(f"**Why this lead?** {lead['Confidence Factors']}")
+                    
+                    st.divider()
+                    
+                    # Full leads table
+                    st.subheader("📋 All Leads (Sorted by Confidence)")
+                    
+                    # Color code by confidence score
+                    def color_confidence(val):
+                        if isinstance(val, (int, float)):
+                            if val >= 70:
+                                return 'background-color: #d4edda'
+                            elif val >= 50:
+                                return 'background-color: #fff3cd'
+                            else:
+                                return 'background-color: #f8d7da'
+                        return ''
+                    
+                    styled_df = leads_df.style.applymap(color_confidence, subset=['Confidence Score'])
+                    st.dataframe(styled_df, use_container_width=True)
 
                     # Download options
                     csv_leads = leads_df.to_csv(index=False)
