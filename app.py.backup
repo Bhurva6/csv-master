@@ -3,13 +3,6 @@ import pandas as pd
 import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
-import requests
-import re
-import time
-from io import BytesIO
-import openpyxl
-from openpyxl.styles import PatternFill, Font, Alignment
-import openpyxl.utils
 
 # Configure the page
 st.set_page_config(
@@ -58,9 +51,9 @@ with col4:
 
 with col5:
     if st.button("📈 Increase Reach", use_container_width=True):
-        st.session_state['feature'] = 'increase_reach'
+        st.session_state['feature'] = 'reach'
     st.markdown("""
-    Find new leads by location and profession using web scraping
+    Find leads by location and profession using web scraping
     """)
 
 st.markdown("---")
@@ -617,7 +610,7 @@ if 'feature' in st.session_state:
                             # Auto-adjust column widths
                             for column in ws.columns:
                                 max_length = 0
-                                column_letter = openpyxl.utils.get_column_letter(column[0].column)
+                                column_letter = column[0].column_letter
                                 for cell in column:
                                     try:
                                         if len(str(cell.value)) > max_length:
@@ -877,7 +870,7 @@ if 'feature' in st.session_state:
                             # Auto-adjust column widths
                             for column in ws.columns:
                                 max_length = 0
-                                column_letter = openpyxl.utils.get_column_letter(column[0].column)
+                                column_letter = column[0].column_letter
                                 for cell in column:
                                     try:
                                         if len(str(cell.value)) > max_length:
@@ -912,7 +905,7 @@ if 'feature' in st.session_state:
     
     elif st.session_state['feature'] == 'autofill':
         st.header("🔍 Auto-Fill Missing Data")
-        st.info("This feature will search and fill missing or invalid emails and phone numbers based on available data.")
+        st.info("This feature will search and fill missing or invalid emails and phone numbers using real APIs.")
 
         if 'df' in st.session_state:
             try:
@@ -926,40 +919,223 @@ if 'feature' in st.session_state:
 
                 if name_cols or email_cols or phone_cols:
                     st.success(f"Found columns for auto-fill analysis")
-
+                    
+                    # API Configuration Section
+                    st.subheader("🔑 API Configuration")
+                    
+                    # API selection
+                    api_options = {
+                        "Demo Mode (Free)": "demo",
+                        "Google Custom Search API": "google",
+                        "Hunter.io API": "hunter",
+                        "Clearbit API": "clearbit",
+                        "ZoomInfo API": "zoominfo"
+                    }
+                    
+                    selected_api = st.selectbox(
+                        "Choose API Service:",
+                        list(api_options.keys()),
+                        help="Select the API service to use for finding contact information"
+                    )
+                    
+                    api_choice = api_options[selected_api]
+                    
+                    # API Key inputs based on selection
+                    api_keys = {}
+                    
+                    if api_choice == "google":
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            api_keys['google_api_key'] = st.text_input("Google Custom Search API Key:", type="password")
+                        with col2:
+                            api_keys['google_cx'] = st.text_input("Custom Search Engine ID:")
+                        st.info("💡 Get your API key from: https://console.developers.google.com/")
+                        
+                    elif api_choice == "hunter":
+                        api_keys['hunter_api_key'] = st.text_input("Hunter.io API Key:", type="password")
+                        st.info("💡 Get your API key from: https://hunter.io/api-keys")
+                        
+                    elif api_choice == "clearbit":
+                        api_keys['clearbit_api_key'] = st.text_input("Clearbit API Key:", type="password")
+                        st.info("💡 Get your API key from: https://dashboard.clearbit.com/")
+                        
+                    elif api_choice == "zoominfo":
+                        api_keys['zoominfo_username'] = st.text_input("ZoomInfo Username:")
+                        api_keys['zoominfo_password'] = st.text_input("ZoomInfo Password:", type="password")
+                        st.info("💡 Get credentials from: https://www.zoominfo.com/")
+                    
                     # Configuration
                     st.subheader("⚙️ Configuration")
                     col1, col2 = st.columns(2)
-
+                    
                     with col1:
                         selected_name_col = st.selectbox("Name Column:", ["None"] + name_cols) if name_cols else "None"
                         selected_email_col = st.selectbox("Email Column:", ["None"] + email_cols) if email_cols else "None"
-
+                    
                     with col2:
                         selected_phone_col = st.selectbox("Phone Column:", ["None"] + phone_cols) if phone_cols else "None"
                         selected_company_col = st.selectbox("Company Column (optional):", ["None"] + company_cols) if company_cols else "None"
+                    
+                    # Rate limiting and cost control
+                    max_requests = st.slider("Max API Requests per Minute:", min_value=1, max_value=60, value=10)
+                    st.warning(f"⚠️ This will make up to {len(df)} API calls. Estimated cost: ${len(df) * 0.005:.2f} (Google) or {len(df) * 0.01:.2f} credits (Hunter.io)")
 
-                    # Hardcoded API keys
-                    google_api_key = "AIzaSyDummyKeyForDemoPurposesOnly"  # Replace with your actual Google API key
-                    google_search_engine_id = "01234567890:abcdefghijk"  # Replace with your actual search engine ID
-                    hunter_api_key = "demo_hunter_api_key_12345"  # Replace with your actual Hunter.io API key
-
-                    search_method = "Real APIs (Production)"
-
-                    if st.button("🚀 Start Auto-Fill Process"):
+                    if st.button("🚀 Start Auto-Fill Process", type="primary"):
+                        if api_choice != "demo" and not all(api_keys.values()):
+                            st.error("Please provide all required API keys for the selected service.")
+                            st.stop()
+                        
                         with st.spinner("Searching and filling missing data..."):
+                            import time
+                            import requests
+                            from urllib.parse import quote
+
+                            # API Functions
+                            def search_google(name, company=None, api_key=None, cx=None):
+                                """Search Google Custom Search API"""
+                                if not api_key or not cx:
+                                    return None
+                                
+                                try:
+                                    query = f"{name}"
+                                    if company and company != "Unknown":
+                                        query += f" {company}"
+                                    query += " email phone contact"
+                                    
+                                    url = f"https://www.googleapis.com/customsearch/v1?key={api_key}&cx={cx}&q={quote(query)}&num=5"
+                                    response = requests.get(url, timeout=10)
+                                    
+                                    if response.status_code == 200:
+                                        data = response.json()
+                                        email_pattern = r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
+                                        phone_pattern = r'\+?1?\d{10,15}'
+                                        
+                                        emails = []
+                                        phones = []
+                                        
+                                        for item in data.get('items', [])[:3]:
+                                            snippet = item.get('snippet', '')
+                                            title = item.get('title', '')
+                                            content = snippet + " " + title
+                                            
+                                            emails.extend(re.findall(email_pattern, content))
+                                            phones.extend(re.findall(phone_pattern, content))
+                                        
+                                        if emails or phones:
+                                            return {
+                                                'email': emails[0] if emails else None,
+                                                'phone': phones[0] if phones else None,
+                                                'source': 'Google Custom Search',
+                                                'confidence': 'Medium',
+                                                'url': data.get('items', [{}])[0].get('link', '') if data.get('items') else ''
+                                            }
+                                except Exception as e:
+                                    st.warning(f"Google API error: {str(e)}")
+                                
+                                return None
+
+                            def search_hunter(name, company=None, api_key=None):
+                                """Search Hunter.io API"""
+                                if not api_key:
+                                    return None
+                                
+                                try:
+                                    # Try domain search first if company is available
+                                    if company and company != "Unknown":
+                                        domain_url = f"https://api.hunter.io/v2/domain-search?domain={quote(company)}&api_key={api_key}"
+                                        domain_response = requests.get(domain_url, timeout=10)
+                                        
+                                        if domain_response.status_code == 200:
+                                            domain_data = domain_response.json()
+                                            emails = domain_data.get('data', {}).get('emails', [])
+                                            if emails:
+                                                # Find email that matches name
+                                                name_parts = str(name).lower().split()
+                                                for email_data in emails[:5]:
+                                                    email = email_data.get('value', '')
+                                                    if name_parts and name_parts[0] in email.lower():
+                                                        return {
+                                                            'email': email,
+                                                            'phone': None,
+                                                            'source': 'Hunter.io Domain Search',
+                                                            'confidence': 'High',
+                                                            'url': f"https://hunter.io/search/{company}"
+                                                        }
+                                    
+                                    # Fallback to email finder
+                                    if '@' not in str(name):
+                                        finder_url = f"https://api.hunter.io/v2/email-finder?full_name={quote(name)}&api_key={api_key}"
+                                        if company and company != "Unknown":
+                                            finder_url += f"&company={quote(company)}"
+                                        
+                                        finder_response = requests.get(finder_url, timeout=10)
+                                        
+                                        if finder_response.status_code == 200:
+                                            finder_data = finder_response.json()
+                                            email = finder_data.get('data', {}).get('email')
+                                            if email:
+                                                return {
+                                                    'email': email,
+                                                    'phone': None,
+                                                    'source': 'Hunter.io Email Finder',
+                                                    'confidence': 'High',
+                                                    'url': f"https://hunter.io/verify/{email}"
+                                                }
+                                                
+                                except Exception as e:
+                                    st.warning(f"Hunter.io API error: {str(e)}")
+                                
+                                return None
+
+                            def search_clearbit(name, company=None, api_key=None):
+                                """Search Clearbit API"""
+                                if not api_key:
+                                    return None
+                                
+                                try:
+                                    headers = {'Authorization': f'Bearer {api_key}'}
+                                    
+                                    # Try person enrichment
+                                    person_url = f"https://person.clearbit.com/v2/people/find?email=&name={quote(name)}"
+                                    if company and company != "Unknown":
+                                        person_url += f"&company={quote(company)}"
+                                    
+                                    person_response = requests.get(person_url, headers=headers, timeout=10)
+                                    
+                                    if person_response.status_code == 200:
+                                        person_data = person_response.json()
+                                        
+                                        email = person_data.get('email')
+                                        phone = None
+                                        
+                                        # Get phone from employment
+                                        employment = person_data.get('employment', {})
+                                        if employment:
+                                            phone = employment.get('phone')
+                                        
+                                        if email or phone:
+                                            return {
+                                                'email': email,
+                                                'phone': phone,
+                                                'source': 'Clearbit Person API',
+                                                'confidence': 'High',
+                                                'url': person_data.get('linkedin', '')
+                                            }
+                                            
+                                except Exception as e:
+                                    st.warning(f"Clearbit API error: {str(e)}")
+                                
+                                return None
 
                             def simulate_search(name, company=None):
-                                """Simulate web search results for demo purposes"""
-                                time.sleep(0.05)  # Simulate search delay
-
+                                """Demo mode simulation"""
+                                time.sleep(0.1)  # Simulate API delay
+                                
                                 if name and str(name) != "Unknown" and not pd.isna(name):
-                                    # Generate plausible email based on name
                                     name_str = str(name).lower().strip()
                                     name_parts = name_str.split()
-
+                                    
                                     if len(name_parts) >= 2:
-                                        # Create realistic email formats
                                         formats = [
                                             f"{name_parts[0]}.{name_parts[-1]}@example.com",
                                             f"{name_parts[0][0]}{name_parts[-1]}@company.com",
@@ -968,157 +1144,42 @@ if 'feature' in st.session_state:
                                         email = np.random.choice(formats)
                                     else:
                                         email = f"{name_parts[0]}@example.com"
-
-                                    # Generate phone
+                                    
                                     phone = f"+1-{np.random.randint(200,999)}-{np.random.randint(100,999)}-{np.random.randint(1000,9999)}"
-
-                                    # Simulate success rate (80% success)
-                                    if np.random.random() < 0.8:
-                                        return {
-                                            'email': email,
-                                            'phone': phone,
-                                            'source': 'Simulated Web Search',
-                                            'confidence': np.random.choice(['High', 'Medium', 'Low'], p=[0.5, 0.3, 0.2])
-                                        }
-
+                                    
+                                    return {
+                                        'email': email,
+                                        'phone': phone,
+                                        'source': 'Demo Mode (Simulated)',
+                                        'confidence': 'Medium',
+                                        'url': 'https://example.com/demo'
+                                    }
+                                
                                 return None
 
-                            def search_with_google(name, company=None, api_key=None, engine_id=None):
-                                """Search Google for contact information"""
-                                if not api_key or not engine_id:
-                                    return None
-
-                                try:
-                                    query = f"{name}"
-                                    if company and company != "Unknown":
-                                        query += f" {company}"
-                                    query += " email phone contact"
-
-                                    url = f"https://www.googleapis.com/customsearch/v1?key={api_key}&cx={engine_id}&q={requests.utils.quote(query)}&num=5"
-                                    response = requests.get(url, timeout=10)
-
-                                    if response.status_code == 200:
-                                        data = response.json()
-                                        email_pattern = r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
-                                        phone_pattern = r'\+?1?\d{10,15}'
-
-                                        emails = []
-                                        phones = []
-
-                                        for item in data.get('items', [])[:5]:
-                                            snippet = item.get('snippet', '')
-                                            title = item.get('title', '')
-                                            content = snippet + ' ' + title
-
-                                            emails.extend(re.findall(email_pattern, content))
-                                            phones.extend(re.findall(phone_pattern, content))
-
-                                        if emails or phones:
-                                            return {
-                                                'email': emails[0] if emails else None,
-                                                'phone': phones[0] if phones else None,
-                                                'source': 'Google Custom Search',
-                                                'confidence': 'Medium'
-                                            }
-                                except Exception as e:
-                                    st.warning(f"Google Search error: {str(e)}")
-
-                                return None
-
-                            def search_with_hunter(name, company=None, api_key=None):
-                                """Search Hunter.io for email addresses"""
-                                if not api_key:
-                                    return None
-
-                                try:
-                                    # Try domain search first if company is available
-                                    if company and company != "Unknown":
-                                        domain = company.lower().replace(' ', '').replace(',', '').replace('.', '')
-                                        url = f"https://api.hunter.io/v2/domain-search?domain={domain}&api_key={api_key}"
-                                        response = requests.get(url, timeout=10)
-
-                                        if response.status_code == 200:
-                                            data = response.json()
-                                            emails = data.get('data', {}).get('emails', [])
-
-                                            if emails:
-                                                # Find email that might match the name
-                                                name_parts = str(name).lower().split()
-                                                for email_data in emails:
-                                                    email = email_data.get('value', '')
-                                                    if name_parts:
-                                                        first_name = name_parts[0]
-                                                        if first_name in email.lower():
-                                                            return {
-                                                                'email': email,
-                                                                'phone': None,
-                                                                'source': 'Hunter.io',
-                                                                'confidence': 'High'
-                                                            }
-
-                                    # Fallback to email finder
-                                    if '@' not in str(name):
-                                        url = f"https://api.hunter.io/v2/email-finder?full_name={requests.utils.quote(str(name))}&api_key={api_key}"
-                                        if company and company != "Unknown":
-                                            url += f"&company={requests.utils.quote(str(company))}"
-
-                                        response = requests.get(url, timeout=10)
-
-                                        if response.status_code == 200:
-                                            data = response.json()
-                                            email = data.get('data', {}).get('email')
-
-                                            if email:
-                                                return {
-                                                    'email': email,
-                                                    'phone': None,
-                                                    'source': 'Hunter.io',
-                                                    'confidence': 'High'
-                                                }
-
-                                except Exception as e:
-                                    st.warning(f"Hunter.io error: {str(e)}")
-
-                                return None
-
-                            def perform_real_search(name, company=None):
-                                """Perform search using available APIs"""
-                                results = []
-
-                                # Try Hunter.io first (best for emails)
-                                if hunter_api_key:
-                                    result = search_with_hunter(name, company, hunter_api_key)
-                                    if result:
-                                        return result
-
-                                # Try Google as fallback
-                                if google_api_key and google_search_engine_id:
-                                    result = search_with_google(name, company, google_api_key, google_search_engine_id)
-                                    if result:
-                                        return result
-
-                                return None
-
-                            # Email validation function
+                            # Validation functions
                             def is_valid_email(email):
                                 if pd.isna(email) or str(email).strip() == '':
                                     return False
                                 email_pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
                                 return bool(re.match(email_pattern, str(email).strip()))
 
-                            # Phone validation function
                             def is_valid_phone(phone):
                                 if pd.isna(phone) or str(phone).strip() == '':
                                     return False
                                 clean_phone = re.sub(r'[^\d+]', '', str(phone))
                                 return len(clean_phone) >= 10
 
+                            # Main processing
                             results = []
                             progress_bar = st.progress(0)
                             status_text = st.empty()
-
+                            
+                            api_calls = 0
+                            rate_limit_start = time.time()
+                            
                             for idx in range(len(df)):
-                                status_text.text(f"Processing row {idx + 1} of {len(df)}...")
+                                status_text.text(f"Processing row {idx + 1} of {len(df)}... (API calls: {api_calls})")
                                 progress_bar.progress((idx + 1) / len(df))
 
                                 row_data = {
@@ -1133,6 +1194,7 @@ if 'feature' in st.session_state:
                                     'Phone Status': "",
                                     'Search Source': "",
                                     'Confidence': "",
+                                    'API Cost': "",
                                     'Notes': ""
                                 }
 
@@ -1141,14 +1203,48 @@ if 'feature' in st.session_state:
                                 needs_phone = not is_valid_phone(row_data['Original Phone'])
 
                                 if needs_email or needs_phone:
-                                    # Perform search
-                                    search_result = perform_real_search(row_data['Name'], row_data['Company'])
+                                    # Rate limiting
+                                    if api_calls >= max_requests:
+                                        elapsed = time.time() - rate_limit_start
+                                        if elapsed < 60:
+                                            time.sleep(60 - elapsed)
+                                        api_calls = 0
+                                        rate_limit_start = time.time()
+                                    
+                                    # Perform search based on selected API
+                                    if api_choice == "demo":
+                                        search_result = simulate_search(row_data['Name'], row_data['Company'])
+                                        cost = "$0.00"
+                                    elif api_choice == "google":
+                                        search_result = search_google(
+                                            row_data['Name'], 
+                                            row_data['Company'], 
+                                            api_keys.get('google_api_key'), 
+                                            api_keys.get('google_cx')
+                                        )
+                                        cost = "$0.005"
+                                    elif api_choice == "hunter":
+                                        search_result = search_hunter(
+                                            row_data['Name'], 
+                                            row_data['Company'], 
+                                            api_keys.get('hunter_api_key')
+                                        )
+                                        cost = "0.01 credits"
+                                    elif api_choice == "clearbit":
+                                        search_result = search_clearbit(
+                                            row_data['Name'], 
+                                            row_data['Company'], 
+                                            api_keys.get('clearbit_api_key')
+                                        )
+                                        cost = "$0.02"
+                                    
+                                    api_calls += 1
 
                                     if search_result:
                                         if needs_email and search_result.get('email'):
                                             row_data['New Email'] = search_result['email']
                                             row_data['Email Status'] = '✅ Found'
-                                            row_data['Notes'] += "Email found via web search. "
+                                            row_data['Notes'] += "Email found via API search. "
                                         elif needs_email:
                                             row_data['Email Status'] = '❌ Not Found'
                                             row_data['Notes'] += "Email not found in search results. "
@@ -1156,13 +1252,14 @@ if 'feature' in st.session_state:
                                         if needs_phone and search_result.get('phone'):
                                             row_data['New Phone'] = search_result['phone']
                                             row_data['Phone Status'] = '✅ Found'
-                                            row_data['Notes'] += "Phone found via web search. "
+                                            row_data['Notes'] += "Phone found via API search. "
                                         elif needs_phone:
                                             row_data['Phone Status'] = '❌ Not Found'
                                             row_data['Notes'] += "Phone not found in search results. "
 
                                         row_data['Search Source'] = search_result['source']
                                         row_data['Confidence'] = search_result['confidence']
+                                        row_data['API Cost'] = cost
                                     else:
                                         if needs_email:
                                             row_data['Email Status'] = '❌ Not Found'
@@ -1170,10 +1267,12 @@ if 'feature' in st.session_state:
                                         if needs_phone:
                                             row_data['Phone Status'] = '❌ Not Found'
                                             row_data['Notes'] += "No search results found. "
+                                        row_data['API Cost'] = cost
                                 else:
                                     row_data['Email Status'] = '✓ Already Valid'
                                     row_data['Phone Status'] = '✓ Already Valid'
                                     row_data['Notes'] = 'No action needed - data already valid'
+                                    row_data['API Cost'] = "$0.00"
 
                                 results.append(row_data)
 
@@ -1184,18 +1283,21 @@ if 'feature' in st.session_state:
 
                             # Summary
                             st.subheader("📊 Auto-Fill Summary")
-
+                            
                             total_rows = len(results)
                             emails_found = sum(1 for r in results if r['Email Status'] == '✅ Found')
                             phones_found = sum(1 for r in results if r['Phone Status'] == '✅ Found')
                             emails_not_found = sum(1 for r in results if r['Email Status'] == '❌ Not Found')
                             phones_not_found = sum(1 for r in results if r['Phone Status'] == '❌ Not Found')
                             already_valid = sum(1 for r in results if 'already valid' in r['Notes'].lower())
+                            total_cost = sum(float(r['API Cost'].replace('$', '').replace(' credits', '')) 
+                                           for r in results if r['API Cost'] and '$' in r['API Cost'])
 
                             col1, col2, col3 = st.columns(3)
                             with col1:
                                 st.metric("Total Rows Processed", total_rows)
                                 st.metric("Already Valid", already_valid)
+                                st.metric("Total API Cost", f"${total_cost:.2f}")
                             with col2:
                                 st.metric("Emails Found", emails_found)
                                 st.metric("Emails Not Found", emails_not_found)
@@ -1213,22 +1315,26 @@ if 'feature' in st.session_state:
                                 for idx, row in results_df.iterrows():
                                     if row['New Email']:
                                         updated_df.at[idx, selected_email_col] = row['New Email']
-
+                            
                             if selected_phone_col != "None":
                                 for idx, row in results_df.iterrows():
                                     if row['New Phone']:
                                         updated_df.at[idx, selected_phone_col] = row['New Phone']
 
                             # Create Excel with multiple sheets
-                            wb = openpyxl.Workbook()
+                            from io import BytesIO
+                            import openpyxl
+                            from openpyxl.styles import PatternFill, Font, Alignment
 
+                            wb = openpyxl.Workbook()
+                            
                             # Summary Sheet
                             ws_summary = wb.active
                             ws_summary.title = "Summary"
                             ws_summary['A1'] = "Auto-Fill Summary Report"
                             ws_summary['A1'].font = Font(bold=True, size=14)
                             ws_summary.merge_cells('A1:B1')
-
+                            
                             ws_summary['A3'] = "Total Rows:"
                             ws_summary['B3'] = total_rows
                             ws_summary['A4'] = "Emails Found:"
@@ -1241,9 +1347,11 @@ if 'feature' in st.session_state:
                             ws_summary['B7'] = phones_not_found
                             ws_summary['A8'] = "Already Valid:"
                             ws_summary['B8'] = already_valid
-
+                            ws_summary['A9'] = "Total API Cost:"
+                            ws_summary['B9'] = f"${total_cost:.2f}"
+                            
                             # Style summary
-                            for row in range(3, 9):
+                            for row in range(3, 10):
                                 ws_summary[f'A{row}'].font = Font(bold=True)
 
                             # Search Results Sheet
@@ -1259,7 +1367,7 @@ if 'feature' in st.session_state:
                             for row_num, row_data in enumerate(results_df.values, 2):
                                 for col_num, value in enumerate(row_data, 1):
                                     cell = ws_results.cell(row=row_num, column=col_num, value=str(value))
-
+                                    
                                     # Color coding
                                     if '✅' in str(value):
                                         cell.fill = PatternFill(start_color="C8E6C9", end_color="C8E6C9", fill_type="solid")
@@ -1286,7 +1394,7 @@ if 'feature' in st.session_state:
                             for ws in [ws_summary, ws_results, ws_updated]:
                                 for column in ws.columns:
                                     max_length = 0
-                                    column_letter = openpyxl.utils.get_column_letter(column[0].column)
+                                    column_letter = column[0].column_letter
                                     for cell in column:
                                         try:
                                             if cell.value and len(str(cell.value)) > max_length:
@@ -1311,7 +1419,7 @@ if 'feature' in st.session_state:
                                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                                     use_container_width=True
                                 )
-
+                            
                             with col2:
                                 # Also offer CSV download of updated data
                                 csv_updated = updated_df.to_csv(index=False)
@@ -1326,11 +1434,12 @@ if 'feature' in st.session_state:
                             st.success("✅ Auto-fill process completed!")
                             st.info(f"""
                             **📊 Excel Report Contains 3 Sheets:**
-                            1. **Summary** - Overview of auto-fill results
-                            2. **Search Results** - Detailed search findings with reasons
-                            3. **Updated Data** - Your original data with newly filled information
-
-                            **APIs Used:** Google Custom Search, Hunter.io
+                            1. **Summary** - Overview with cost breakdown
+                            2. **Search Results** - Detailed findings with API sources
+                            3. **Updated Data** - Your original data with filled information
+                            
+                            **💰 Total API Cost: ${total_cost:.2f}**
+                            **🔍 API Used: {selected_api}**
                             """)
 
                 else:
@@ -1339,316 +1448,300 @@ if 'feature' in st.session_state:
 
             except Exception as e:
                 st.error(f"Error in auto-fill process: {str(e)}")
+                st.info("If you're using real APIs, please check your API keys and network connection.")
         else:
             st.info("Please upload a CSV file first to use the auto-fill feature.")
 
-    elif st.session_state['feature'] == 'increase_reach':
+    elif st.session_state['feature'] == 'reach':
         st.header("📈 Increase Reach")
-        st.info("Find new leads by location and profession using web scraping from LinkedIn and other sources.")
 
-        # Define dropdown options
-        indian_cities = [
-            "Mumbai", "Delhi", "Bangalore", "Hyderabad", "Ahmedabad", "Chennai", "Kolkata", 
-            "Surat", "Pune", "Jaipur", "Lucknow", "Kanpur", "Nagpur", "Indore", "Thane",
-        ]
+        # Lead finding logic - works with uploaded CSV or sample data
+        if 'df' in st.session_state:
+            try:
+                # Use the DataFrame from session state
+                df = st.session_state['df']
 
-        professions = [
-            "Architects", "HVAC Consultants", "Industries", "Factories", "Data Centres", 
-            "Corporate Offices", "Warehouses", "Builders and Developers"
-        ]
+                # Check for relevant columns
+                name_cols = [col for col in df.columns if any(keyword in col.lower() for keyword in ['name', 'full_name', 'first_name', 'last_name', 'customer_name', 'person_name'])]
+                email_cols = [col for col in df.columns if any(keyword in col.lower() for keyword in ['email', 'mail', 'e-mail'])]
+                phone_cols = [col for col in df.columns if any(keyword in col.lower() for keyword in ['phone', 'mobile', 'tel', 'contact'])]
+                company_cols = [col for col in df.columns if any(keyword in col.lower() for keyword in ['company', 'organization', 'business', 'employer'])]
+                location_cols = [col for col in df.columns if any(keyword in col.lower() for keyword in ['city', 'state', 'country', 'location', 'address', 'region', 'province', 'town', 'place'])]
 
-        # Configuration
-        st.subheader("⚙️ Search Configuration")
-        col1, col2 = st.columns(2)
-
-        with col1:
-            selected_location = st.selectbox("Select Location:", indian_cities)
-            selected_profession = st.selectbox("Select Profession:", professions)
-
-        with col2:
-            num_leads = st.slider("Number of leads to find:", min_value=5, max_value=50, value=20)
-            search_depth = st.selectbox("Search Depth:", ["Basic", "Deep", "Comprehensive"])
-
-        
-        api_col1, api_col2 = st.columns(2)
-
-        with api_col1:
-            # Google Custom Search - Free tier
-            st.subheader("🔑 API Configuration")
-            st.info("**Required for real searches.** Get your credentials from Google Cloud Console.")
-            
-            google_api_key = st.text_input(
-                "Google Custom Search API Key *", 
-                value="",
-                type="password", 
-                help="Free tier: 100 searches/day. Get from console.cloud.google.com -> APIs & Services -> Credentials",
-                placeholder="Enter your real Google API key"
-            )
-            google_search_engine_id = st.text_input(
-                "Google Search Engine ID *", 
-                value="",
-                help="Create custom search engine at programmablesearchengine.google.com/controlpanel/create",
-                placeholder="Enter your Search Engine ID (format: xxxxxxxxx:yyyyyyy)"
-            )
-
-        st.divider()
-        
-        search_method = st.radio(
-            "Search Method:",
-            ["Real APIs (Production)", "Demo Mode (Simulation)"],
-            index=0,
-            help="Real APIs will use your Google credentials to fetch actual results. Demo Mode generates fake data for testing."
-        )
-
-        # Validation for Real APIs
-        if search_method == "Real APIs (Production)":
-            if not google_api_key or not google_search_engine_id:
-                st.error("❌ **API credentials required!** Please enter both Google API Key and Search Engine ID above.")
-            elif len(google_api_key) < 30:
-                st.warning("⚠️ API Key seems too short. Make sure you entered the complete key.")
-            else:
-                st.success("✅ API credentials provided. Ready to search!")
-
-        # Disable button if using Real APIs without credentials
-        button_disabled = (search_method == "Real APIs (Production)" and (not google_api_key or not google_search_engine_id))
-        
-        if st.button("🔍 Find New Leads", disabled=button_disabled):
-            # Additional validation
-            if search_method == "Real APIs (Production)" and (not google_api_key or not google_search_engine_id):
-                st.error("❌ Cannot proceed without API credentials. Please enter your Google API key and Search Engine ID.")
-                st.stop()
-            
-            with st.spinner("Searching for leads..."):
-                def simulate_lead_search(location, profession, num_leads):
-                    """Simulate lead search results"""
-                    leads = []
-                    for i in range(num_leads):
-                        # Generate realistic names
-                        first_names = ["Rahul", "Priya", "Amit", "Sneha", "Vikram", "Anjali", "Rohit", "Kavita", "Arjun", "Meera"]
-                        last_names = ["Sharma", "Patel", "Singh", "Kumar", "Gupta", "Jain", "Agarwal", "Verma", "Chopra", "Malhotra"]
-                        
-                        name = f"{np.random.choice(first_names)} {np.random.choice(last_names)}"
-                        email = f"{name.lower().replace(' ', '.')}@example.com"
-                        phone = f"+91-{np.random.randint(7000000000, 9999999999)}"
-                        company = f"{profession} Solutions {np.random.randint(1, 100)}"
-                        
-                        lead = {
-                            'Name': name,
-                            'Profession': profession,
-                            'Location': location,
-                            'Email': email,
-                            'Phone': phone,
-                            'Company': company,
-                            'Source': 'Simulated Web Search',
-                            'Confidence': np.random.choice(['High', 'Medium', 'Low'], p=[0.4, 0.4, 0.2])
-                        }
-                        leads.append(lead)
-                        time.sleep(0.01)  # Simulate search time
-                    return leads
-
-                def search_google(location, profession, api_key=None, engine_id=None):
-                    """Search Google for professionals - REAL API ONLY"""
-                    if not api_key or not engine_id:
-                        st.error("❌ Missing API key or Search Engine ID")
-                        return []
+                if name_cols or email_cols or phone_cols or company_cols or location_cols:
+                    st.success("Ready to find leads!")
                     
-                    try:
-                        # Improved search query for better results
-                        query = f'"{profession}" "{location}" India contact email phone'
-                        url = f"https://www.googleapis.com/customsearch/v1?key={api_key}&cx={engine_id}&q={requests.utils.quote(query)}&num=10"
-                        
-                        st.info(f"Calling API: {url.split('&key=')[0]}...")
-                        response = requests.get(url, timeout=15)
-                        
-                        # Check for API errors
-                        if response.status_code != 200:
-                            error_data = response.json() if response.text else {}
-                            error_msg = error_data.get('error', {}).get('message', 'Unknown error')
-                            st.error(f"❌ Google API Error ({response.status_code}): {error_msg}")
-                            return []
-                        
-                        data = response.json()
-                        
-                        # Check if we got results
-                        if 'items' not in data or len(data.get('items', [])) == 0:
-                            st.warning(f"⚠️ No results found from Google API for '{profession}' in '{location}'")
-                            return []
-                        
-                        st.success(f"✅ Found {len(data.get('items', []))} results from Google API")
-                        
-                        leads = []
-                        for item in data.get('items', []):
-                            title = item.get('title', '')
-                            snippet = item.get('snippet', '')
-                            link = item.get('link', '')
-                            
-                            # Extract name from title (improved pattern)
-                            name_match = re.search(r'([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)', title)
-                            if not name_match:
-                                # Try to extract from snippet
-                                name_match = re.search(r'([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)', snippet)
-                            
-                            name = name_match.group(1) if name_match else None
-                            
-                            # Extract email from snippet and title
-                            email_pattern = r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
-                            email_matches = re.findall(email_pattern, snippet + ' ' + title)
-                            email = email_matches[0] if email_matches else None
-                            
-                            # Extract phone from snippet and title
-                            phone_pattern = r'[\+]?[(]?[0-9]{3}[)]?[-\s\.]?[0-9]{3}[-\s\.]?[0-9]{4,6}'
-                            phone_matches = re.findall(phone_pattern, snippet + ' ' + title)
-                            phone = phone_matches[0] if phone_matches else None
-                            
-                            # Extract company name
-                            company_match = re.search(r'(?:at|@|works at|employed at)\s+([A-Z][a-zA-Z\s&]+?)(?:\s*[-|,]|\s*$)', snippet)
-                            company = company_match.group(1).strip() if company_match else None
-                            
-                            # Only add if we have at least a name or email or phone
-                            if name or email or phone:
-                                lead = {
-                                    'Name': name if name else 'N/A',
-                                    'Profession': profession,
-                                    'Location': location,
-                                    'Email': email if email else 'N/A',
-                                    'Phone': phone if phone else 'N/A',
-                                    'Company': company if company else 'N/A',
-                                    'Source': f'Google Search (Real API)',
-                                    'Link': link,
-                                    'Confidence': 'High' if (name and email) else 'Medium' if email else 'Low'
-                                }
-                                leads.append(lead)
-                        
-                        if not leads:
-                            st.warning("⚠️ API returned results but no contact information could be extracted")
-                        
-                        return leads
-                        
-                    except requests.exceptions.Timeout:
-                        st.error("❌ API request timed out. Please try again.")
-                        return []
-                    except requests.exceptions.RequestException as e:
-                        st.error(f"❌ Network error: {str(e)}")
-                        return []
-                    except Exception as e:
-                        st.error(f"❌ Google Search error: {str(e)}")
+                    # Configuration
+                    st.subheader("⚙️ Configuration")
+                    col1, col2 = st.columns(2)
                     
-                    return []
-
-                # Perform search
-                if search_method == "Demo Mode (Simulation)":
-                    new_leads = simulate_lead_search(selected_location, selected_profession, num_leads)
-                else:
-                    new_leads = []
-                    
-                    # Try Google - Real API call only
-                    if google_api_key and google_search_engine_id:
-                        st.info(f"🔍 Calling Google Custom Search API for '{selected_profession}' in '{selected_location}'...")
-                        google_leads = search_google(selected_location, selected_profession, google_api_key, google_search_engine_id)
-                        new_leads.extend(google_leads)
-                    
-                    # Show error if no real results - DO NOT fall back to simulation
-                    if not new_leads:
-                        st.error("❌ No leads found using Google Custom Search API. This could be due to:")
-                        st.warning("""
-                        - Invalid or expired API credentials
-                        - No matching results for your search criteria
-                        - API quota exceeded (100 queries/day for free tier)
-                        - Search Engine ID not configured properly
-                        
-                        **Please verify your API credentials or try different search criteria.**
-                        """)
-                        st.stop()  # Stop execution, don't show dummy data
-
-                if new_leads:
-                    leads_df = pd.DataFrame(new_leads)
-                    st.subheader("📋 New Leads Found")
-                    st.dataframe(leads_df, use_container_width=True)
-
-                    # Summary
-                    st.subheader("📊 Search Summary")
-                    col1, col2, col3 = st.columns(3)
                     with col1:
-                        st.metric("Total Leads Found", len(new_leads))
-                    with col2:
-                        high_conf = sum(1 for l in new_leads if l['Confidence'] == 'High')
-                        st.metric("High Confidence", high_conf)
-                    with col3:
-                        with_emails = sum(1 for l in new_leads if l['Email'] and '@' in l['Email'])
-                        st.metric("With Email Contacts", with_emails)
-
-                    # Download options
-                    csv_leads = leads_df.to_csv(index=False)
-                    st.download_button(
-                        label="📥 Download Leads (CSV)",
-                        data=csv_leads,
-                        file_name=f"{selected_profession.lower().replace(' ', '_')}_{selected_location.lower()}_leads.csv",
-                        mime="text/csv"
-                    )
-
-                    # Create Excel file for download
-                    from io import BytesIO
-                    from openpyxl.styles import PatternFill, Font
-
-                    wb = openpyxl.Workbook()
-                    ws = wb.active
-                    ws.title = "New Leads"
-
-                    # Add summary
-                    ws['A1'] = f"Leads Search Results: {selected_profession} in {selected_location}"
-                    ws['A1'].font = Font(bold=True, size=14)
-                    ws.merge_cells('A1:E1')
+                        selected_name_col = st.selectbox("Name Column:", ["None"] + name_cols) if name_cols else "None"
+                        selected_email_col = st.selectbox("Email Column:", ["None"] + email_cols) if email_cols else "None"
+                        selected_company_col = st.selectbox("Company Column:", ["None"] + company_cols) if company_cols else "None"
                     
-                    ws['A3'] = "Search Criteria:"
-                    ws['B3'] = f"{selected_profession} in {selected_location}"
-                    ws['A4'] = "Total Leads:"
-                    ws['B4'] = len(new_leads)
-                    ws['A5'] = "Search Method:"
-                    ws['B5'] = search_method
+                    with col2:
+                        selected_phone_col = st.selectbox("Phone Column:", ["None"] + phone_cols) if phone_cols else "None"
+                        selected_location_col = st.selectbox("Location Column:", ["None"] + location_cols) if location_cols else "None"
+                    
+                    # Rate limiting and cost control
+                    max_requests = st.slider("Max API Requests per Minute:", min_value=1, max_value=60, value=10)
+                    st.warning(f"⚠️ This will make up to {len(df)} API calls. Estimated cost: ${len(df) * 0.005:.2f} (Google) or {len(df) * 0.01:.2f} credits (Hunter.io)")
 
-                    # Add headers starting from row 7
-                    headers = list(leads_df.columns)
-                    for col_num, header in enumerate(headers, 1):
-                        cell = ws.cell(row=7, column=col_num, value=header)
-                        cell.font = Font(bold=True)
-                        cell.fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
-                        cell.font = Font(bold=True, color="FFFFFF")
-                        cell.alignment = Alignment(horizontal="center")
+                    if st.button("🔍 Find Leads"):
+                        with st.spinner("Finding leads..."):
+                            import time
+                            import requests
+                            from urllib.parse import quote
 
-                    # Add data
-                    for row_num, row_data in enumerate(leads_df.values, 8):
-                        for col_num, value in enumerate(row_data, 1):
-                            ws.cell(row=row_num, column=col_num, value=str(value))
+                            # API Functions
+                            def search_google(name, company=None, location=None, api_key=None, cx=None):
+                                """Search Google Custom Search API for leads"""
+                                if not api_key or not cx:
+                                    return None
+                                
+                                try:
+                                    query = f"{name}"
+                                    if company and company != "Unknown":
+                                        query += f" {company}"
+                                    if location and location != "Unknown":
+                                        query += f" {location}"
+                                    query += " email phone contact"
+                                    
+                                    url = f"https://www.googleapis.com/customsearch/v1?key={api_key}&cx={cx}&q={quote(query)}&num=5"
+                                    response = requests.get(url, timeout=10)
+                                    
+                                    if response.status_code == 200:
+                                        data = response.json()
+                                        email_pattern = r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
+                                        phone_pattern = r'\+?1?\d{10,15}'
+                                        
+                                        emails = []
+                                        phones = []
+                                        
+                                        for item in data.get('items', [])[:3]:
+                                            snippet = item.get('snippet', '')
+                                            title = item.get('title', '')
+                                            content = snippet + " " + title
+                                            
+                                            emails.extend(re.findall(email_pattern, content))
+                                            phones.extend(re.findall(phone_pattern, content))
+                                        
+                                        if emails or phones:
+                                            return {
+                                                'email': emails[0] if emails else None,
+                                                'phone': phones[0] if phones else None,
+                                                'source': 'Google Custom Search',
+                                                'confidence': 'Medium',
+                                                'url': data.get('items', [{}])[0].get('link', '') if data.get('items') else ''
+                                            }
+                                except Exception as e:
+                                    st.warning(f"Google API error: {str(e)}")
+                                
+                                return None
 
-                    # Auto-adjust column widths
-                    for column in ws.columns:
-                        max_length = 0
-                        column_letter = openpyxl.utils.get_column_letter(column[0].column)
-                        for cell in column:
-                            try:
-                                if cell.value and len(str(cell.value)) > max_length:
-                                    max_length = len(str(cell.value))
-                            except:
-                                pass
-                        adjusted_width = min(max_length + 2, 50)
-                        ws.column_dimensions[column_letter].width = adjusted_width
+                            def search_hunter(name, company=None, location=None, api_key=None):
+                                """Search Hunter.io API for leads"""
+                                if not api_key:
+                                    return None
+                                
+                                try:
+                                    # Try domain search first if company is available
+                                    if company and company != "Unknown":
+                                        domain_url = f"https://api.hunter.io/v2/domain-search?domain={quote(company)}&api_key={api_key}"
+                                        domain_response = requests.get(domain_url, timeout=10)
+                                        
+                                        if domain_response.status_code == 200:
+                                            domain_data = domain_response.json()
+                                            emails = domain_data.get('data', {}).get('emails', [])
+                                            if emails:
+                                                # Find email that matches name
+                                                name_parts = str(name).lower().split()
+                                                for email_data in emails[:5]:
+                                                    email = email_data.get('value', '')
+                                                    if name_parts and name_parts[0] in email.lower():
+                                                        return {
+                                                            'email': email,
+                                                            'phone': None,
+                                                            'source': 'Hunter.io Domain Search',
+                                                            'confidence': 'High',
+                                                            'url': f"https://hunter.io/search/{company}"
+                                                        }
+                                    
+                                    # Fallback to email finder
+                                    if '@' not in str(name):
+                                        finder_url = f"https://api.hunter.io/v2/email-finder?full_name={quote(name)}&api_key={api_key}"
+                                        if company and company != "Unknown":
+                                            finder_url += f"&company={quote(company)}"
+                                        
+                                        finder_response = requests.get(finder_url, timeout=10)
+                                        
+                                        if finder_response.status_code == 200:
+                                            finder_data = finder_response.json()
+                                            email = finder_data.get('data', {}).get('email')
+                                            if email:
+                                                return {
+                                                    'email': email,
+                                                    'phone': None,
+                                                    'source': 'Hunter.io Email Finder',
+                                                    'confidence': 'High',
+                                                    'url': f"https://hunter.io/verify/{email}"
+                                                }
+                                                
+                                except Exception as e:
+                                    st.warning(f"Hunter.io API error: {str(e)}")
+                                
+                                return None
 
-                    # Save to BytesIO
-                    excel_buffer = BytesIO()
-                    wb.save(excel_buffer)
-                    excel_buffer.seek(0)
+                            def search_clearbit(name, company=None, location=None, api_key=None):
+                                """Search Clearbit API for leads"""
+                                if not api_key:
+                                    return None
+                                
+                                try:
+                                    headers = {'Authorization': f'Bearer {api_key}'}
+                                    
+                                    # Try person enrichment
+                                    person_url = f"https://person.clearbit.com/v2/people/find?email=&name={quote(name)}"
+                                    if company and company != "Unknown":
+                                        person_url += f"&company={quote(company)}"
+                                    
+                                    person_response = requests.get(person_url, headers=headers, timeout=10)
+                                    
+                                    if person_response.status_code == 200:
+                                        person_data = person_response.json()
+                                        
+                                        email = person_data.get('email')
+                                        phone = None
+                                        
+                                        # Get phone from employment
+                                        employment = person_data.get('employment', {})
+                                        if employment:
+                                            phone = employment.get('phone')
+                                        
+                                        if email or phone:
+                                            return {
+                                                'email': email,
+                                                'phone': phone,
+                                                'source': 'Clearbit Person API',
+                                                'confidence': 'High',
+                                                'url': person_data.get('linkedin', '')
+                                            }
+                                            
+                                except Exception as e:
+                                    st.warning(f"Clearbit API error: {str(e)}")
+                                
+                                return None
 
-                    # Download button
-                    st.download_button(
-                        label="📥 Download Leads (Excel)",
-                        data=excel_buffer,
-                        file_name=f"{selected_profession.lower().replace(' ', '_')}_{selected_location.lower()}_leads.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                    )
+                            def simulate_search(name, company=None, location=None):
+                                """Demo mode simulation for leads"""
+                                time.sleep(0.1)  # Simulate API delay
+                                
+                                if name and str(name) != "Unknown" and not pd.isna(name):
+                                    name_str = str(name).lower().strip()
+                                    name_parts = name_str.split()
+                                    
+                                    if len(name_parts) >= 2:
+                                        formats = [
+                                            f"{name_parts[0]}.{name_parts[-1]}@example.com",
+                                            f"{name_parts[0][0]}{name_parts[-1]}@company.com",
+                                            f"{name_parts[0]}_{name_parts[-1]}@business.net"
+                                        ]
+                                        email = np.random.choice(formats)
+                                    else:
+                                        email = f"{name_parts[0]}@example.com"
+                                    
+                                    phone = f"+1-{np.random.randint(200,999)}-{np.random.randint(100,999)}-{np.random.randint(1000,9999)}"
+                                    
+                                    return {
+                                        'email': email,
+                                        'phone': phone,
+                                        'source': 'Demo Mode (Simulated)',
+                                        'confidence': 'Medium',
+                                        'url': 'https://example.com/demo'
+                                    }
+                                
+                                return None
 
-                else:
-                    st.info("No leads found for the selected criteria. Try different search parameters or API keys.")
+                            # Validation functions
+                            def is_valid_email(email):
+                                if pd.isna(email) or str(email).strip() == '':
+                                    return False
+                                email_pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+                                return bool(re.match(email_pattern, str(email).strip()))
 
-    # Clear feature button
-    if st.button("🔄 Back to Features"):
-        del st.session_state['feature']
+                            def is_valid_phone(phone):
+                                if pd.isna(phone) or str(phone).strip() == '':
+                                    return False
+                                clean_phone = re.sub(r'[^\d+]', '', str(phone))
+                                return len(clean_phone) >= 10
+
+                            # Main processing
+                            results = []
+                            progress_bar = st.progress(0)
+                            status_text = st.empty()
+                            
+                            api_calls = 0
+                            rate_limit_start = time.time()
+                            
+                            for idx in range(len(df)):
+                                status_text.text(f"Processing row {idx + 1} of {len(df)}... (API calls: {api_calls})")
+                                progress_bar.progress((idx + 1) / len(df))
+
+                                row_data = {
+                                    'Row': idx + 1,
+                                    'Name': df[selected_name_col].iloc[idx] if selected_name_col != "None" else "Unknown",
+                                    'Original Email': df[selected_email_col].iloc[idx] if selected_email_col != "None" else "",
+                                    'Original Phone': df[selected_phone_col].iloc[idx] if selected_phone_col != "None" else "",
+                                    'Company': df[selected_company_col].iloc[idx] if selected_company_col != "None" else "",
+                                    'Location': df[selected_location_col].iloc[idx] if selected_location_col != "None" else "",
+                                    'New Email': "",
+                                    'New Phone': "",
+                                    'Email Status': "",
+                                    'Phone Status': "",
+                                    'Search Source': "",
+                                    'Confidence': "",
+                                    'API Cost': "",
+                                    'Notes': ""
+                                }
+
+                                # Check if email/phone needs filling
+                                needs_email = not is_valid_email(row_data['Original Email'])
+                                needs_phone = not is_valid_phone(row_data['Original Phone'])
+
+                                if needs_email or needs_phone:
+                                    # Rate limiting
+                                    if api_calls >= max_requests:
+                                        elapsed = time.time() - rate_limit_start
+                                        if elapsed < 60:
+                                            time.sleep(60 - elapsed)
+                                        api_calls = 0
+                                        rate_limit_start = time.time()
+                                    
+                                    # Perform search based on selected API
+                                    if api_choice == "demo":
+                                        search_result = simulate_search(row_data['Name'], row_data['Company'], row_data['Location'])
+                                        cost = "$0.00"
+                                    elif api_choice == "google":
+                                        search_result = search_google(
+                                            row_data['Name'], 
+                                            row_data['Company'], 
+                                            row_data['Location'],
+                                            api_keys.get('google_api_key'), 
+                                            api_keys.get('google_cx')
+                                        )
+                                        cost = "$0.005"
+                                    elif api_choice == "hunter":
+                                        search_result = search_hunter(
+                                            row_data['Name'], 
+                                            row_data['Company'], 
+                                            row_data['Location'],
+                                            api_keys.get('hunter_api_key')
+                                        )
+                                        cost = "0.01 credits"
+                                    elif api_choice == "clearbit":
+                                        search_result = search_clearbit(
+                                            row_data['Name'], 
+                                            row_data['Company'], 
+                                            row_data['Location'],
+                                            api_keys.get('clearbit_api
